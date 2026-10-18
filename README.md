@@ -70,7 +70,7 @@ GitHub Actions 只编译 Release Kotlin 源码，不生成 Debug APK。
 
 `.github/workflows/ci.yml` 会在 `main` 推送、Pull Request 或手动触发时：
 
-1. 安装 JDK 17、Android SDK 37 和 Build Tools；
+1. 安装 JDK 17、Android SDK 37.0 和 Build Tools；
 2. 编译 Release Kotlin 源码。
 
 正式 Release 应在配置签名材料后构建，并将 APK 附加到对应版本的 GitHub Release。应用内更新检查和下载均指向本仓库：
