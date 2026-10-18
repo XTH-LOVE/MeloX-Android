@@ -1,0 +1,25 @@
+const header = document.querySelector(".site-header");
+const revealItems = document.querySelectorAll(".reveal");
+
+const updateHeader = () => {
+  header.classList.toggle("scrolled", window.scrollY > 12);
+};
+
+window.addEventListener("scroll", updateHeader, { passive: true });
+updateHeader();
+
+if ("IntersectionObserver" in window) {
+  const observer = new IntersectionObserver(
+    (entries, currentObserver) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-visible");
+        currentObserver.unobserve(entry.target);
+      });
+    },
+    { threshold: 0.12 }
+  );
+  revealItems.forEach((item) => observer.observe(item));
+} else {
+  revealItems.forEach((item) => item.classList.add("is-visible"));
+}
