@@ -1,0 +1,30 @@
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+build/
+.gradle/
+*.hprof
+*.log
+
+# local-only artifacts
+.pr_worktree/
+keystore.properties
+.melox-build-count
+
+# CMake/native build output
+android/app/.cxx/
+
+# Emulator captures and local inspection output
+android/melox-emulator-*.png
+android/melox-emulator-*.xml
+.adb_compare/
+
+# Local editor and OS metadata
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local planning notes
+*.tmp.md

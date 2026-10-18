@@ -1,0 +1,171 @@
+package com.lladlam.melox.core.provider.netease
+
+import com.lladlam.melox.core.audio.NeteaseGdAudioClient
+import com.lladlam.melox.core.account.NeteaseSessionStore
+import com.lladlam.melox.core.library.NeteaseLibraryClient
+import com.lladlam.melox.core.lyrics.LyricsDocument
+import com.lladlam.melox.core.music.model.AudioQualityTier
+import com.lladlam.melox.core.music.model.MusicAlbumRef
+import com.lladlam.melox.core.music.model.MusicArtistRef
+import com.lladlam.melox.core.music.model.MusicPage
+import com.lladlam.melox.core.music.model.MusicResourceId
+import com.lladlam.melox.core.music.model.MusicSource
+import com.lladlam.melox.core.music.model.MusicTrack
+import com.lladlam.melox.core.music.model.PlaybackResolution
+import com.lladlam.melox.core.music.model.ProviderTrackMetadata
+import com.lladlam.melox.core.music.model.TrackAvailability
+import com.lladlam.melox.core.music.provider.LyricsCapability
+import com.lladlam.melox.core.music.provider.LocalAggregationCapability
+import com.lladlam.melox.core.music.provider.MusicCapability
+import com.lladlam.melox.core.music.provider.MusicProvider
+import com.lladlam.melox.core.music.provider.PlaybackCapability
+import com.lladlam.melox.core.music.provider.SearchCapability
+import com.lladlam.melox.core.network.NeteaseSearchClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+
+/**
+ * Compatibility adapter around the already migrated NetEase implementation.
+ * NetEase-native capabilities remain in the existing Netease* clients so future
+ * MeloX iOS migrations can keep their current one-to-one structure.
+ */
+class NeteaseProvider(
+    private val cookieProvider: () -> String = { "" },
+    private val httpClient: OkHttpClient = com.lladlam.melox.core.network.MeloXHttpClient.shared,
+) : MusicProvider, SearchCapability, LyricsCapability, PlaybackCapability, LocalAggregationCapability {
+    override val source: MusicSource = MusicSource.Netease
+    override val displayName: String = source.displayName
+    override val capabilities: Set<MusicCapability> = setOf(
+        MusicCapability.Search,
+        MusicCapability.Playback,
+        MusicCapability.Lyrics,
+        MusicCapability.Library,
+        MusicCapability.Playlists,
+        MusicCapability.Albums,
+        MusicCapability.Artists,
+        MusicCapability.Comments,
+        MusicCapability.HomeRecommendations,
+        MusicCapability.DailyRecommendations,
+        MusicCapability.Rankings,
+        MusicCapability.Podcasts,
+        MusicCapability.CloudMusic,
+        MusicCapability.PrivateFm,
+        MusicCapability.HeartMode,
+        MusicCapability.ListenTogether,
+        MusicCapability.Messages,
+        MusicCapability.Recognition,
+    )
+
+    private val searchClient = NeteaseSearchClient(
+        httpClient = httpClient,
+        cookieProvider = cookieProvider,
+    )
+    private val gdAudioClient = NeteaseGdAudioClient(httpClient)
+
+    override suspend fun searchSongs(
+        query: String,
+        page: Int,
+        pageSize: Int,
+    ): MusicPage<MusicTrack> {
+        if (page < 1) return MusicPage(emptyList(), 1, pageSize.coerceAtLeast(1), 0)
+        // Current NeteaseSearchClient mirrors the iOS first-page path. Keep it
+        // untouched during the no-behaviour-change migration; pagination can be
+        // delegated to NeteaseUniversalSearchClient when UI starts requesting it.
+        if (page > 1) return MusicPage(emptyList(), page, pageSize.coerceAtLeast(1), null, false)
+        val size = pageSize.coerceIn(1, 50)
+        // The original NetEase SearchScreen enriches missing artwork after search.
+        // Unified search must do the same before mapping into provider-neutral tracks,
+        // otherwise the Compose row receives a blank artwork URL.
+        val songs = searchClient.ensureArtwork(searchClient.searchSongs(query, size)).map { song ->
+            MusicTrack(
+                id = MusicResourceId(MusicSource.Netease, song.id.toString()),
+                title = song.name,
+                artists = song.artists
+                    .split(" / ")
+                    .map(String::trim)
+                    .filter(String::isNotBlank)
+                    .map { MusicArtistRef(name = it) },
+                album = song.album.takeIf(String::isNotBlank)?.let {
+                    MusicAlbumRef(name = it, artworkUrl = song.artworkUrl)
+                },
+                artworkUrl = song.artworkUrl,
+                durationMs = song.durationMs.takeIf { it > 0L },
+                availability = TrackAvailability.Playable,
+                providerMetadata = ProviderTrackMetadata.Netease(song.id),
+            )
+        }
+        return MusicPage(
+            items = songs,
+            page = page,
+            pageSize = size,
+            total = null,
+            hasMore = songs.size >= size,
+        )
+    }
+
+    override suspend fun lyrics(track: MusicTrack): LyricsDocument =
+        searchClient.lyrics(track.requireNeteaseId())
+
+    override suspend fun aggregationTracks(page: Int, pageSize: Int): MusicPage<MusicTrack> =
+        withContext(Dispatchers.IO) {
+            if (page > 1) return@withContext MusicPage(emptyList(), page, pageSize, 0L, false)
+            val cookie = cookieProvider()
+            val userId = cookie
+                .takeIf { NeteaseSessionStore.containsMusicU(it) }
+                ?.let { runCatching { searchClient.accountProfile(it).userId }.getOrNull() }
+                ?: return@withContext MusicPage(emptyList(), page, pageSize, 0L, false)
+            val snapshot = NeteaseLibraryClient(cookieProvider, httpClient).snapshot(userId)
+            val songs = (snapshot.likedSongs + snapshot.recentSongs).distinctBy { it.id }
+            MusicPage(
+                items = songs.map { song ->
+                    MusicTrack(
+                        id = MusicResourceId(MusicSource.Netease, song.id.toString()),
+                        title = song.name,
+                        artists = song.artists.split(" / ").map(String::trim).filter(String::isNotBlank).map { MusicArtistRef(name = it) },
+                        album = song.album.takeIf(String::isNotBlank)?.let { MusicAlbumRef(name = it, artworkUrl = song.artworkUrl) },
+                        artworkUrl = song.artworkUrl,
+                        durationMs = song.durationMs.takeIf { it > 0L },
+                        providerMetadata = ProviderTrackMetadata.Netease(song.id),
+                    )
+                },
+                page = page,
+                pageSize = pageSize,
+                total = songs.size.toLong(),
+            )
+        }
+
+    override suspend fun resolvePlayback(
+        track: MusicTrack,
+        quality: AudioQualityTier,
+    ): PlaybackResolution = withContext(Dispatchers.IO) {
+        val result = gdAudioClient.playbackSourceBlocking(track.requireNeteaseId(), quality)
+        PlaybackResolution.Playable(
+            url = result.url,
+            requestedQuality = quality,
+            actualQuality = result.quality?.toCommonTier(),
+            bitrate = result.bitrate,
+            format = result.format,
+            expiresAtEpochMs = result.expiresAtEpochMs,
+        )
+    }
+}
+
+private fun MusicTrack.requireNeteaseId(): Long {
+    require(id.source == MusicSource.Netease) {
+        "NeteaseProvider cannot handle ${id.source.storageValue} track"
+    }
+    return (providerMetadata as? ProviderTrackMetadata.Netease)?.numericId
+        ?: id.value.toLongOrNull()
+        ?: error("invalid NetEase track id: ${id.value}")
+}
+
+private fun com.lladlam.melox.core.audio.MusicQuality.toCommonTier(): AudioQualityTier = when (this) {
+    com.lladlam.melox.core.audio.MusicQuality.Standard -> AudioQualityTier.Standard
+    com.lladlam.melox.core.audio.MusicQuality.High -> AudioQualityTier.High
+    com.lladlam.melox.core.audio.MusicQuality.Lossless -> AudioQualityTier.Lossless
+    com.lladlam.melox.core.audio.MusicQuality.HiResolution -> AudioQualityTier.HiResolution
+    com.lladlam.melox.core.audio.MusicQuality.HighDefinitionSurround,
+    com.lladlam.melox.core.audio.MusicQuality.ImmersiveSurround -> AudioQualityTier.Immersive
+    com.lladlam.melox.core.audio.MusicQuality.UltraClearMaster -> AudioQualityTier.Master
+}

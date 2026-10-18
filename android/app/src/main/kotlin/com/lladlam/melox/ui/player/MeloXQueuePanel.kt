@@ -1,0 +1,265 @@
+package com.lladlam.melox.ui.player
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.media3.common.Player
+import com.lladlam.melox.ui.glass.meloXBackdropBlur
+import com.lladlam.melox.ui.glass.MeloXSymbol
+import com.lladlam.melox.ui.glass.MeloXSymbolIcon
+
+@Composable
+fun MeloXQueuePanel(
+    state: MeloXPlaybackUiState,
+    modifier: Modifier = Modifier,
+    showSongHeader: Boolean = true,
+    interactive: Boolean = true,
+) {
+    val currentEntry = state.queue.getOrNull(state.currentIndex)
+    val history = if (state.currentIndex > 0) state.queue.take(state.currentIndex) else emptyList()
+    val upcoming = if (state.currentIndex >= 0 && state.queue.isNotEmpty()) {
+        state.queue.drop(state.currentIndex + 1)
+    } else emptyList()
+    val manualQueue = upcoming.filter { it.origin == MeloXQueueOrigin.Manual }
+    val continuing = upcoming.filter { it.origin != MeloXQueueOrigin.Manual }
+    val listState = rememberLazyListState()
+    val historyItemCount = if (history.isEmpty()) 0 else history.size + 1
+
+    LaunchedEffect(state.mediaId, historyItemCount) {
+        runCatching { listState.scrollToItem(historyItemCount) }
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        if (showSongHeader && currentEntry != null) {
+            QueueSongHeaderSurface(currentEntry)
+        }
+
+        QueueModeControlsSurface(state, interactive)
+
+        LazyColumn(
+            state = listState,
+            userScrollEnabled = interactive,
+            // 触顶/触底橡胶回弹触感。
+            modifier = Modifier.weight(1f).fillMaxWidth().meloXEdgeOverscrollHaptic(listState),
+            contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (history.isNotEmpty()) {
+                item(key = "history-title") { QueueSectionTitle("历史记录", subdued = true) }
+                items(history, key = { "history-${it.entryId}" }) { entry ->
+                    QueueRow(entry, state, interactive)
+                }
+            }
+
+            if (manualQueue.isNotEmpty()) {
+                item(key = "manual-title") { QueueSectionTitle("队列") }
+                items(manualQueue, key = { "manual-${it.entryId}" }) { entry ->
+                    QueueRow(entry, state, interactive)
+                }
+            }
+
+            item(key = "continue-title") { QueueSectionTitle("继续播放") }
+            if (continuing.isEmpty()) {
+                item(key = "continue-empty") {
+                    Box(Modifier.fillMaxWidth().height(96.dp), contentAlignment = Alignment.Center) {
+                        Text("没有待播放歌曲", color = Color.White.copy(alpha = .55f), fontSize = 15.sp)
+                    }
+                }
+            } else {
+                items(continuing, key = { "continue-${it.entryId}" }) { entry ->
+                    QueueRow(entry, state, interactive)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueSongHeaderSurface(entry: MeloXQueueEntry) {
+    val shape = RoundedCornerShape(22.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
+            .clip(shape)
+            .meloXBackdropBlur(
+                shape = shape,
+                blurRadius = 20.dp,
+                surfaceColor = Color.Black.copy(alpha = .10f),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Artwork(entry.artworkUrl, Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)))
+        Column(Modifier.weight(1f)) {
+            Text(entry.title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(entry.artist, color = Color.White.copy(alpha = .62f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun QueueModeControlsSurface(state: MeloXPlaybackUiState, interactive: Boolean) {
+    val shape = RoundedCornerShape(28.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .clip(shape)
+            .meloXBackdropBlur(
+                shape = shape,
+                blurRadius = 20.dp,
+                surfaceColor = Color.Black.copy(alpha = .095f),
+            )
+            .padding(8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QueueModeButton(MeloXSymbol.Shuffle, state.shuffleEnabled, enabled = interactive, onClick = state::toggleShuffle, modifier = Modifier.weight(1f))
+            QueueModeButton(if (state.repeatMode == Player.REPEAT_MODE_ONE) MeloXSymbol.RepeatOne else MeloXSymbol.Repeat, state.repeatMode != Player.REPEAT_MODE_OFF, enabled = interactive, onClick = state::cycleRepeatMode, modifier = Modifier.weight(1f))
+            QueueModeButton(MeloXSymbol.Infinity, state.autoplayEnabled, enabled = interactive, onClick = state::toggleAutoplay, modifier = Modifier.weight(1f))
+            QueueModeButton(MeloXSymbol.AutoMix, state.autoMixEnabled, enabled = interactive, onClick = state::toggleAutoMix, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun QueueSectionTitle(title: String, subdued: Boolean = false) {
+    Text(
+        title,
+        color = Color.White.copy(alpha = if (subdued) .62f else 1f),
+        fontSize = if (subdued) 18.sp else 22.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun QueueRow(entry: MeloXQueueEntry, state: MeloXPlaybackUiState, interactive: Boolean) {
+    val dragOffset = remember(entry.entryId) { mutableFloatStateOf(0f) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .pointerInput(interactive, entry.entryId, state.currentIndex) {
+                if (!interactive || entry.index <= state.currentIndex) return@pointerInput
+                detectDragGesturesAfterLongPress(
+                    onDragEnd = { dragOffset.floatValue = 0f },
+                    onDragCancel = { dragOffset.floatValue = 0f },
+                ) { change, amount ->
+                    change.consume()
+                    dragOffset.floatValue += amount.y
+                    val rowHeight = 52.dp.toPx()
+                    when {
+                        dragOffset.floatValue > rowHeight -> {
+                            val current = state.queue.indexOfFirst { it.entryId == entry.entryId }
+                            if (current > state.currentIndex && current < state.queue.lastIndex) {
+                                state.moveQueueItem(current, current + 1)
+                                dragOffset.floatValue -= rowHeight
+                            }
+                        }
+                        dragOffset.floatValue < -rowHeight -> {
+                            val current = state.queue.indexOfFirst { it.entryId == entry.entryId }
+                            if (current > state.currentIndex + 1) {
+                                state.moveQueueItem(current, current - 1)
+                                dragOffset.floatValue += rowHeight
+                            }
+                        }
+                    }
+                }
+            }
+            .clickable(enabled = interactive) {
+                state.queue.indexOfFirst { it.entryId == entry.entryId }
+                    .takeIf { it >= 0 }
+                    ?.let(state::playQueueIndex)
+            }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Artwork(entry.artworkUrl, Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)))
+        Column(Modifier.weight(1f)) {
+            Text(entry.title, color = Color.White, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(entry.artist, color = Color.White.copy(alpha = .58f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        }
+        if (entry.index > state.currentIndex) {
+            MeloXSymbolIcon(
+                symbol = MeloXSymbol.List,
+                modifier = Modifier.size(22.dp),
+                color = Color.White.copy(alpha = .48f),
+                iconSize = 20.sp,
+                contentDescription = "调整播放顺序",
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueModeButton(
+    symbol: MeloXSymbol,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Color.White.copy(alpha = if (selected) .70f else .12f))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { this.selected = selected },
+        contentAlignment = Alignment.Center,
+    ) {
+        MeloXSymbolIcon(
+            symbol = symbol,
+            modifier = Modifier.size(24.dp),
+            color = when {
+                !enabled -> Color.White.copy(alpha = .25f)
+                selected -> Color.Black.copy(alpha = .62f)
+                else -> Color.White.copy(alpha = .86f)
+            },
+            iconSize = 22.sp,
+            contentDescription = when (symbol) {
+                MeloXSymbol.Shuffle -> "随机播放"
+                MeloXSymbol.Repeat -> "列表循环"
+                MeloXSymbol.RepeatOne -> "单曲循环"
+                MeloXSymbol.Infinity -> "无尽播放"
+                MeloXSymbol.AutoMix -> "自动过渡"
+                else -> null
+            },
+        )
+    }
+}
